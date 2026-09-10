@@ -633,7 +633,24 @@ function handleImport(evt){
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
-      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+      // Algunos excels traen una fila de título (ej. "Optimo Autopartes") antes
+      // de los encabezados reales. Buscamos automáticamente la fila que
+      // contiene "Código"/"SKU" y usamos esa como encabezado real.
+      const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+      const skuHeaderMatches = ['código','codigo','sku'];
+      let headerRowIndex = raw.findIndex(r =>
+        Array.isArray(r) && r.some(cell => skuHeaderMatches.includes(String(cell).trim().toLowerCase()))
+      );
+      if(headerRowIndex === -1) headerRowIndex = 0; // no se encontró, usar la primera fila como respaldo
+
+      const headers = raw[headerRowIndex].map(h => String(h).trim());
+      const rows = raw.slice(headerRowIndex + 1).map(r=>{
+        const obj = {};
+        headers.forEach((h, i)=>{ obj[h] = (r[i] !== undefined ? r[i] : ''); });
+        return obj;
+      });
+
       const pick = (row, names) => {
         for(const n of names){ if(row[n] !== undefined && row[n] !== null && String(row[n]).trim() !== '') return String(row[n]).trim(); }
         return '';
