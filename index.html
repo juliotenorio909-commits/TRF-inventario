@@ -11,6 +11,7 @@
 <script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<script src="https://unpkg.com/tesseract.js@5/dist/tesseract.min.js"></script>
 <style>
   :root{
     --bg: #14181c;
@@ -99,6 +100,24 @@
   .gun-box.listening .gun-dot{ background: var(--accent); box-shadow: 0 0 0 4px var(--accent-dim); }
   .gun-text{ font-family: var(--mono); font-size: 1.05rem; color: var(--text); flex:1; }
   .gun-hint{ color: var(--muted); font-size: 0.78rem; margin-top: 10px; }
+
+  /* foto de etiqueta / OCR */
+  #modeLabel .primary{ width:100%; }
+  #labelStatus{ color: var(--muted); font-size: 0.85rem; margin-top: 12px; min-height: 1.2em; }
+  #labelResult{ margin-top: 10px; }
+  .label-candidates{ display:flex; flex-wrap:wrap; gap:8px; margin-bottom: 12px; }
+  .label-chip{
+    font-family: var(--mono); font-size: 0.95rem; padding: 8px 14px; border-radius: 6px;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--text);
+    cursor:pointer;
+  }
+  .label-chip:hover{ border-color: var(--accent); }
+  .label-manual{ display:flex; gap:8px; align-items:center; margin-top: 6px; }
+  .label-manual input{
+    flex:1; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px;
+    color: var(--text); font-family: var(--mono); font-size: 0.95rem; padding: 10px 12px;
+  }
+  .label-raw{ color: var(--muted); font-size: 0.75rem; margin-top: 10px; word-break: break-word; }
   #gunInput{ position:absolute; opacity:0; pointer-events:none; }
 
   /* camera */
@@ -209,6 +228,7 @@
     <div class="tabs">
       <div class="tab active" id="tabGun" onclick="setMode('gun')">Pistola lectora</div>
       <div class="tab" id="tabCam" onclick="setMode('cam')">Cámara del celular</div>
+      <div class="tab" id="tabLabel" onclick="setMode('label')">Foto de etiqueta</div>
     </div>
 
     <div class="scan-mode active" id="modeGun">
@@ -226,6 +246,14 @@
         <button class="primary" id="camStartBtn" onclick="startCamera()">Iniciar cámara</button>
         <button id="camStopBtn" onclick="stopCamera()" disabled>Detener</button>
       </div>
+    </div>
+
+    <div class="scan-mode" id="modeLabel">
+      <input type="file" id="labelPhotoInput" accept="image/*" capture="environment" onchange="handleLabelPhoto(event)" style="display:none;">
+      <button class="primary" id="labelPhotoBtn" onclick="document.getElementById('labelPhotoInput').click()">Tomar foto de la etiqueta</button>
+      <div class="gun-hint">Úsalo cuando el código de barras no coincida con el SKU real impreso en la etiqueta. Toma la foto lo más de frente y enfocada posible.</div>
+      <div id="labelStatus"></div>
+      <div id="labelResult"></div>
     </div>
 
     <div id="feedback">
@@ -350,8 +378,10 @@ function beepNew(){ beep(500, 130, 0); beep(500, 130, 170); vibrate([60,80,60]);
 function setMode(mode){
   document.getElementById('tabGun').classList.toggle('active', mode==='gun');
   document.getElementById('tabCam').classList.toggle('active', mode==='cam');
+  document.getElementById('tabLabel').classList.toggle('active', mode==='label');
   document.getElementById('modeGun').classList.toggle('active', mode==='gun');
   document.getElementById('modeCam').classList.toggle('active', mode==='cam');
+  document.getElementById('modeLabel').classList.toggle('active', mode==='label');
   if(mode!=='cam') stopCamera();
   if(mode==='gun') focusGun();
   hideFeedback();
@@ -515,6 +545,92 @@ function showFeedback(type, sku, text, offerAdd){
 }
 function hideFeedback(){
   document.getElementById('feedback').className = '';
+}
+
+/* ---------- foto de etiqueta (OCR) ---------- */
+async function handleLabelPhoto(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  unlockAudio();
+  const statusEl = document.getElementById('labelStatus');
+  const resultEl = document.getElementById('labelResult');
+  const btn = document.getElementById('labelPhotoBtn');
+  btn.disabled = true;
+  resultEl.innerHTML = '';
+  statusEl.textContent = 'Leyendo etiqueta… puede tardar unos segundos.';
+  try{
+    const { data } = await Tesseract.recognize(file, 'eng', {
+      logger: m=>{
+        if(m.status === 'recognizing text'){
+          statusEl.textContent = 'Leyendo etiqueta… ' + Math.round((m.progress||0)*100) + '%';
+        }
+      }
+    });
+    const text = data && data.text ? data.text : '';
+    const candidates = extractSkuCandidates(text);
+    renderLabelResult(candidates, text);
+    statusEl.textContent = candidates.length
+      ? 'Toca el código correcto, o corrígelo si hace falta:'
+      : 'No se detectó un código claro. Escríbelo manualmente:';
+  }catch(err){
+    console.error(err);
+    statusEl.textContent = 'No se pudo leer la foto. Intenta con más luz y más de frente.';
+  }finally{
+    btn.disabled = false;
+    evt.target.value = '';
+  }
+}
+
+function extractSkuCandidates(rawText){
+  const upper = rawText.toUpperCase();
+  // tokens alfanuméricos de 4 a 12 caracteres que mezclan letras y números
+  // (así se distingue del número de barras, que es solo dígitos largos)
+  const tokens = upper.match(/\b[A-Z0-9\-]{4,12}\b/g) || [];
+  const seen = new Set();
+  const candidates = [];
+  tokens.forEach(t=>{
+    const clean = t.trim();
+    const hasLetter = /[A-Z]/.test(clean);
+    const hasDigit = /[0-9]/.test(clean);
+    if(hasLetter && hasDigit && !seen.has(clean)){
+      seen.add(clean);
+      candidates.push(clean);
+    }
+  });
+  return candidates;
+}
+
+function renderLabelResult(candidates, rawText){
+  const resultEl = document.getElementById('labelResult');
+  let html = '';
+  if(candidates.length){
+    html += '<div class="label-candidates">';
+    candidates.forEach(c=>{
+      const known = catalog[c] ? ' (' + escapeHtml(catalog[c].descripcion || 'en catálogo') + ')' : '';
+      html += '<div class="label-chip" onclick="fillLabelCode(\'' + escapeAttr(c) + '\')">' + escapeHtml(c) + known + '</div>';
+    });
+    html += '</div>';
+  }
+  html += '<div class="label-manual">' +
+    '<input id="labelManualInput" placeholder="Código del SKU" value="' + escapeAttr(candidates[0]||'') + '">' +
+    '<button class="row-btn" onclick="confirmLabelCode()">Usar este código</button>' +
+    '</div>';
+  if(rawText && rawText.trim()){
+    html += '<div class="label-raw">Texto leído: ' + escapeHtml(rawText.trim().replace(/\n+/g,' · ')) + '</div>';
+  }
+  resultEl.innerHTML = html;
+}
+
+function fillLabelCode(code){
+  const input = document.getElementById('labelManualInput');
+  if(input) input.value = code;
+}
+
+async function confirmLabelCode(){
+  const input = document.getElementById('labelManualInput');
+  const code = input ? input.value.trim() : '';
+  if(!code) return;
+  await processScan(code);
 }
 
 /* ---------- tabla ---------- */
