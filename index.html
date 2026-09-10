@@ -291,8 +291,8 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-const catalogRef = db.collection('trf-inventario').doc('catalog');
-const inventarioRef = db.collection('trf-inventario').doc('inventario');
+const catalogRef = db.collection('inventario_refacciones').doc('catalog');
+const inventarioRef = db.collection('inventario_refacciones').doc('inventario');
 
 /* ---------- storage (Firestore, con sincronización en vivo) ---------- */
 function loadData(){
