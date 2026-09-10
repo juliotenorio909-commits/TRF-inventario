@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1">
+<title>Inventario de Refacciones</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script src="https://unpkg.com/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
+<style>
+  :root{
+    --bg: #14181c;
+    --panel: #1c2126;
+    --panel-2: #22282e;
+    --line: #2e353c;
+    --text: #edeff1;
+    --muted: #8a929b;
+    --accent: #ff6a1a;
+    --accent-dim: #7a3a17;
+    --ok: #45c17c;
+    --ok-dim: #1f3a2b;
+    --warn: #e8b23a;
+    --warn-dim: #4a3c17;
+    --mono: 'IBM Plex Mono', monospace;
+    --sans: 'IBM Plex Sans', sans-serif;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    min-height: 100vh;
+    padding: 20px 16px 60px;
+  }
+  .wrap{ max-width: 980px; margin: 0 auto; }
+
+  /* header */
+  header{
+    display:flex; align-items:flex-end; justify-content:space-between;
+    gap:16px; padding-bottom:18px; margin-bottom:20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .brand{ display:flex; align-items:center; gap:12px; }
+  .brand-mark{
+    width:38px; height:38px; border-radius:6px;
+    background: repeating-linear-gradient(135deg, var(--accent), var(--accent) 6px, #1a1a1a 6px, #1a1a1a 12px);
+    flex-shrink:0;
+  }
+  h1{ font-size:1.35rem; margin:0; font-weight:600; letter-spacing:-0.01em;}
+  .sub{ color:var(--muted); font-size:0.85rem; margin-top:2px; }
+
+  .stats{ display:flex; gap:22px; }
+  .stat{ text-align:right; }
+  .stat .n{ font-family:var(--mono); font-size:1.5rem; font-weight:600; line-height:1; }
+  .stat .l{ color:var(--muted); font-size:0.72rem; margin-top:4px; }
+  .stat.warn-color .n{ color: var(--warn); }
+
+  /* panel base */
+  .panel{
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 18px;
+    margin-bottom: 18px;
+  }
+  .panel h2{
+    font-size: 0.78rem; text-transform:none; letter-spacing:0.01em;
+    color: var(--muted); margin: 0 0 14px 0; font-weight:500;
+  }
+
+  /* mode tabs */
+  .tabs{ display:flex; gap:8px; margin-bottom:16px; }
+  .tab{
+    flex:1; padding:10px 14px; border-radius:8px; border:1px solid var(--line);
+    background: var(--panel-2); color: var(--muted); font-family:var(--sans);
+    font-size:0.88rem; font-weight:500; cursor:pointer; text-align:center;
+    transition: border-color .15s, color .15s, background .15s;
+  }
+  .tab.active{ border-color: var(--accent); color: var(--text); background: #2a2015; }
+
+  .scan-mode{ display:none; }
+  .scan-mode.active{ display:block; }
+
+  /* pistola input */
+  .gun-box{
+    display:flex; align-items:center; gap:12px;
+    background: var(--panel-2); border: 1px dashed var(--line);
+    border-radius: 8px; padding: 16px; cursor:text;
+  }
+  .gun-box.listening{ border-color: var(--accent); }
+  .gun-dot{
+    width:10px; height:10px; border-radius:50%; background: var(--muted); flex-shrink:0;
+  }
+  .gun-box.listening .gun-dot{ background: var(--accent); box-shadow: 0 0 0 4px var(--accent-dim); }
+  .gun-text{ font-family: var(--mono); font-size: 1.05rem; color: var(--text); flex:1; }
+  .gun-hint{ color: var(--muted); font-size: 0.78rem; margin-top: 10px; }
+  #gunInput{ position:absolute; opacity:0; pointer-events:none; }
+
+  /* camera */
+  #reader{ width:100%; border-radius:8px; overflow:hidden; background:#000; }
+  .cam-controls{ display:flex; gap:10px; margin-top:12px; }
+
+  button{
+    font-family: var(--sans); font-size:0.86rem; font-weight:500;
+    border-radius:7px; border:1px solid var(--line); background: var(--panel-2);
+    color: var(--text); padding:9px 14px; cursor:pointer;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover{ border-color:#454e56; }
+  button.primary{ background: var(--accent); border-color: var(--accent); color:#1a1006; font-weight:600; }
+  button.primary:hover{ background:#ff7a33; }
+  button.ghost{ background:transparent; }
+  button:disabled{ opacity:0.45; cursor:not-allowed; }
+
+  /* feedback toast */
+  #feedback{
+    margin-top:14px; padding:12px 14px; border-radius:8px;
+    font-size:0.88rem; display:none; align-items:center; gap:10px;
+  }
+  #feedback.show{ display:flex; }
+  #feedback.ok{ background: var(--ok-dim); color: #b3f0cd; border:1px solid #2c5a3f; }
+  #feedback.new{ background: var(--warn-dim); color: #ffdf9e; border:1px solid #6b5322; }
+  #feedback .fb-sku{ font-family:var(--mono); font-weight:600; }
+  #feedback button{ margin-left:auto; }
+
+  /* toolbar above table */
+  .toolbar{ display:flex; flex-wrap:wrap; gap:10px; align-items:center; margin-bottom:12px; }
+  .toolbar input[type=text]{
+    flex:1; min-width:160px; background: var(--panel-2); border:1px solid var(--line);
+    color:var(--text); border-radius:7px; padding:9px 12px; font-family:var(--sans); font-size:0.86rem;
+  }
+  .toolbar .spacer{ flex: 1 1 auto; }
+
+  table{ width:100%; border-collapse: collapse; font-size:0.86rem; }
+  thead th{
+    text-align:left; color:var(--muted); font-weight:500; font-size:0.74rem;
+    padding:8px 10px; border-bottom:1px solid var(--line);
+  }
+  tbody td{ padding:10px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  tbody tr:hover{ background: rgba(255,255,255,0.02); }
+  .sku-cell{ font-family: var(--mono); font-weight:600; }
+  .qty-cell{ font-family: var(--mono); font-weight:700; font-size:0.95rem; }
+  .badge-missing{
+    display:inline-block; font-size:0.7rem; padding:2px 7px; border-radius:20px;
+    background: var(--warn-dim); color: var(--warn); margin-left:6px;
+  }
+  .muted-text{ color: var(--muted); }
+  .row-btn{ padding:5px 10px; font-size:0.78rem; }
+  .row-actions{ display:flex; gap:6px; flex-wrap:wrap; }
+  .row-btn.danger{ border-color:#5a2a20; color:#ff9b7a; }
+  .row-btn.danger:hover{ border-color:#ff6a1a; }
+
+  .empty{ text-align:center; color:var(--muted); padding:40px 20px; font-size:0.88rem; }
+
+  /* modal */
+  .modal-bg{
+    display:none; position:fixed; inset:0; background: rgba(0,0,0,0.55);
+    align-items:center; justify-content:center; z-index:50; padding:20px;
+  }
+  .modal-bg.show{ display:flex; }
+  .modal{
+    background: var(--panel); border:1px solid var(--line); border-radius:10px;
+    padding:22px; width:100%; max-width:380px;
+  }
+  .modal h3{ margin:0 0 4px; font-size:1rem; }
+  .modal .modal-sku{ font-family:var(--mono); color:var(--accent); font-size:0.85rem; margin-bottom:16px; }
+  .field{ margin-bottom:12px; }
+  .field label{ display:block; font-size:0.76rem; color:var(--muted); margin-bottom:5px; }
+  .field input{
+    width:100%; background: var(--panel-2); border:1px solid var(--line);
+    color:var(--text); border-radius:7px; padding:9px 11px; font-family:var(--sans); font-size:0.88rem;
+  }
+  .modal-actions{ display:flex; gap:10px; margin-top:18px; justify-content:flex-end; }
+
+  .footer-note{ color:var(--muted); font-size:0.76rem; margin-top:22px; line-height:1.5; }
+  input[type=file]{ display:none; }
+
+  @media (max-width:560px){
+    .stats{ gap:14px; }
+    .stat .n{ font-size:1.2rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="brand">
+      <div class="brand-mark"></div>
+      <div>
+        <h1>Inventario de refacciones</h1>
+        <div class="sub">Conteo por SKU vía código de barras</div>
+      </div>
+    </div>
+    <div class="stats">
+      <div class="stat"><div class="n" id="statTotal">0</div><div class="l">piezas</div></div>
+      <div class="stat"><div class="n" id="statSkus">0</div><div class="l">SKU únicos</div></div>
+      <div class="stat warn-color"><div class="n" id="statMissing">0</div><div class="l">sin datos</div></div>
+    </div>
+  </header>
+
+  <div class="panel">
+    <h2>Escanear pieza</h2>
+    <div class="tabs">
+      <div class="tab active" id="tabGun" onclick="setMode('gun')">Pistola lectora</div>
+      <div class="tab" id="tabCam" onclick="setMode('cam')">Cámara del celular</div>
+    </div>
+
+    <div class="scan-mode active" id="modeGun">
+      <div class="gun-box" id="gunBox" onclick="focusGun()">
+        <div class="gun-dot" id="gunDot"></div>
+        <div class="gun-text" id="gunText">Listo para escanear…</div>
+      </div>
+      <input id="gunInput" autocomplete="off">
+      <div class="gun-hint">Da clic aquí y luego dispara el lector. El código se procesa solo, sin necesidad de dar Enter.</div>
+    </div>
+
+    <div class="scan-mode" id="modeCam">
+      <div id="reader"></div>
+      <div class="cam-controls">
+        <button class="primary" id="camStartBtn" onclick="startCamera()">Iniciar cámara</button>
+        <button id="camStopBtn" onclick="stopCamera()" disabled>Detener</button>
+      </div>
+    </div>
+
+    <div id="feedback">
+      <span id="fbText"></span>
+      <button class="row-btn" id="fbActionBtn" style="display:none;"></button>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>Catálogo e inventario</h2>
+    <div class="toolbar">
+      <input type="text" id="searchBox" placeholder="Buscar por SKU o nombre…" oninput="renderTable()">
+      <div class="spacer"></div>
+      <button onclick="document.getElementById('importFile').click()">Importar catálogo</button>
+      <input type="file" id="importFile" accept=".csv,.xlsx,.xls" onchange="handleImport(event)">
+      <button onclick="exportCsv()">Exportar CSV</button>
+      <button onclick="confirmReset()">Reiniciar conteo</button>
+    </div>
+    <div id="tableWrap"></div>
+  </div>
+
+  <div class="footer-note" id="footerNote"></div>
+</div>
+
+<div class="modal-bg" id="modalBg">
+  <div class="modal">
+    <h3>Datos de la pieza</h3>
+    <div class="modal-sku" id="modalSku"></div>
+    <div class="field"><label>Nombre</label><input id="fNombre" placeholder="Ej. Balatas delanteras"></div>
+    <div class="field"><label>Posición</label><input id="fPosicion" placeholder="Ej. Delantera izquierda"></div>
+    <div class="field"><label>Categoría</label><input id="fCategoria" placeholder="Ej. Frenos"></div>
+    <div class="modal-actions">
+      <button onclick="closeModal()">Cancelar</button>
+      <button class="primary" onclick="saveModal()">Guardar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ---------- estado ---------- */
+let catalog = {};     // { sku: {nombre, posicion, categoria} }
+let inventario = {};  // { sku: {cantidad, ultimo} }
+let currentModalSku = null;
+let html5QrCode = null;
+let gunBuffer = '';
+let gunTimer = null;
+let audioCtx = null;
+let lastScan = { code: null, time: 0 };
+const SCAN_COOLDOWN_MS = 1800; // evita contar el mismo código varias veces si se queda a la vista
+
+/* ---------- Firebase (base de datos compartida en tiempo real) ---------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyCp_6Aj5NXV73qIgx9zal6Wnfu8mv6alMk",
+  authDomain: "trf-inventario.firebaseapp.com",
+  projectId: "trf-inventario",
+  storageBucket: "trf-inventario.firebasestorage.app",
+  messagingSenderId: "778285402367",
+  appId: "1:778285402367:web:daf7d147e5887fbcdee4ca"
+};
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const catalogRef = db.collection('trf-inventario').doc('catalog');
+const inventarioRef = db.collection('trf-inventario').doc('inventario');
+
+/* ---------- storage (Firestore, con sincronización en vivo) ---------- */
+function loadData(){
+  catalogRef.onSnapshot(doc=>{
+    catalog = (doc.exists && doc.data().json) ? JSON.parse(doc.data().json) : {};
+    renderTable();
+  }, err=>console.error('Error leyendo catálogo', err));
+
+  inventarioRef.onSnapshot(doc=>{
+    inventario = (doc.exists && doc.data().json) ? JSON.parse(doc.data().json) : {};
+    renderTable();
+  }, err=>console.error('Error leyendo inventario', err));
+}
+
+async function saveCatalog(){
+  try{ await catalogRef.set({ json: JSON.stringify(catalog) }); }
+  catch(e){ console.error('Error guardando catálogo', e); alert('No se pudo guardar en la base de datos. Revisa tu conexión.'); }
+}
+async function saveInventario(){
+  try{ await inventarioRef.set({ json: JSON.stringify(inventario) }); }
+  catch(e){ console.error('Error guardando inventario', e); alert('No se pudo guardar en la base de datos. Revisa tu conexión.'); }
+}
+
+/* ---------- audio ---------- */
+function unlockAudio(){
+  try{
+    if(!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if(audioCtx.state === 'suspended') audioCtx.resume();
+  }catch(e){ /* navegador sin soporte de audio */ }
+}
+function beep(freq, duration, delayMs){
+  if(!audioCtx) return;
+  try{
+    const startAt = audioCtx.currentTime + (delayMs||0)/1000;
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = freq;
+    gain.gain.setValueAtTime(0.0001, startAt);
+    gain.gain.exponentialRampToValueAtTime(0.5, startAt + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startAt + duration/1000);
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(startAt);
+    osc.stop(startAt + duration/1000 + 0.02);
+  }catch(e){ /* ignorar si el audio falla */ }
+}
+function vibrate(pattern){
+  try{ if(navigator.vibrate) navigator.vibrate(pattern); }catch(e){ /* no soportado */ }
+}
+function beepKnown(){ beep(1200, 110, 0); vibrate(70); }                       // un tono, pieza reconocida
+function beepNew(){ beep(500, 130, 0); beep(500, 130, 170); vibrate([60,80,60]); } // dos tonos, SKU sin datos
+
+/* ---------- modos de escaneo ---------- */
+function setMode(mode){
+  document.getElementById('tabGun').classList.toggle('active', mode==='gun');
+  document.getElementById('tabCam').classList.toggle('active', mode==='cam');
+  document.getElementById('modeGun').classList.toggle('active', mode==='gun');
+  document.getElementById('modeCam').classList.toggle('active', mode==='cam');
+  if(mode!=='cam') stopCamera();
+  if(mode==='gun') focusGun();
+  hideFeedback();
+}
+
+function focusGun(){
+  unlockAudio();
+  document.getElementById('gunInput').focus();
+  document.getElementById('gunBox').classList.add('listening');
+  document.getElementById('gunText').textContent = 'Escuchando… dispara el código';
+}
+function blurGun(){
+  document.getElementById('gunBox').classList.remove('listening');
+  document.getElementById('gunText').textContent = 'Listo para escanear…';
+}
+
+document.getElementById('gunInput').addEventListener('blur', blurGun);
+document.getElementById('gunInput').addEventListener('focus', ()=> document.getElementById('gunBox').classList.add('listening'));
+
+document.getElementById('gunInput').addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter'){
+    e.preventDefault();
+    const code = document.getElementById('gunInput').value.trim();
+    document.getElementById('gunInput').value = '';
+    if(code) processScan(code);
+  }
+});
+
+// Respaldo: muchos lectores no mandan foco al input si el usuario no dio clic antes.
+// Este listener global captura el tecleo rápido característico de una pistola
+// mientras no se esté escribiendo en otro campo (modal, buscador).
+document.addEventListener('keydown', (e)=>{
+  const active = document.activeElement;
+  const typingElsewhere = active && (active.tagName === 'INPUT' && active.id !== 'gunInput');
+  const modalOpen = document.getElementById('modalBg').classList.contains('show');
+  const camActive = document.getElementById('modeCam').classList.contains('active');
+  if(typingElsewhere || modalOpen || camActive) return;
+  if(active && active.id === 'gunInput') return; // ya lo maneja el listener del input
+
+  if(e.key === 'Enter'){
+    if(gunBuffer.length >= 3){
+      processScan(gunBuffer);
+    }
+    gunBuffer = '';
+    return;
+  }
+  if(e.key.length === 1){
+    gunBuffer += e.key;
+    clearTimeout(gunTimer);
+    gunTimer = setTimeout(()=>{ gunBuffer = ''; }, 400);
+  }
+});
+
+/* ---------- cámara ---------- */
+function startCamera(){
+  unlockAudio();
+  const readerEl = document.getElementById('reader');
+  readerEl.innerHTML = '';
+  html5QrCode = new Html5Qrcode('reader', {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13,
+      Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,
+      Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128,
+      Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.QR_CODE
+    ]
+  });
+  const config = { fps: 10, qrbox: { width: 300, height: 160 }, disableFlip: false };
+  html5QrCode.start(
+    { facingMode: 'environment' },
+    config,
+    (decodedText)=>{ handleDecoded(decodedText.trim()); },
+    ()=>{ /* frame sin código, se ignora */ }
+  ).then(()=>{
+    document.getElementById('camStartBtn').disabled = true;
+    document.getElementById('camStopBtn').disabled = false;
+  }).catch((err)=>{
+    document.getElementById('reader').innerHTML =
+      '<div class="empty">No se pudo abrir la cámara. Revisa los permisos del navegador.</div>';
+    console.error(err);
+  });
+}
+function stopCamera(){
+  if(html5QrCode){
+    html5QrCode.stop().then(()=>{
+      html5QrCode.clear();
+      html5QrCode = null;
+      document.getElementById('reader').innerHTML = '';
+      document.getElementById('camStartBtn').disabled = false;
+      document.getElementById('camStopBtn').disabled = true;
+    }).catch(()=>{});
+  }
+}
+
+/* ---------- lógica de escaneo ---------- */
+/* ---------- confirmación de lectura (evita códigos mal leídos) ---------- */
+let candidateCode = null;
+let candidateCount = 0;
+let candidateFirstTime = 0;
+const CONFIRM_WINDOW_MS = 800;
+
+function handleDecoded(code){
+  const now = Date.now();
+  if(code === candidateCode && (now - candidateFirstTime) < CONFIRM_WINDOW_MS){
+    candidateCount++;
+  } else {
+    candidateCode = code;
+    candidateCount = 1;
+    candidateFirstTime = now;
+  }
+  if(candidateCount >= 2){
+    candidateCount = 0;
+    processScan(code);
+  }
+}
+
+async function processScan(sku){
+  if(!sku) return;
+
+  // evita contar de más si el mismo código sigue frente a la cámara
+  const nowMs = Date.now();
+  if(sku === lastScan.code && (nowMs - lastScan.time) < SCAN_COOLDOWN_MS){
+    return;
+  }
+  lastScan = { code: sku, time: nowMs };
+
+  const now = new Date();
+  if(!inventario[sku]) inventario[sku] = { cantidad: 0, ultimo: '' };
+  inventario[sku].cantidad += 1;
+  inventario[sku].ultimo = now.toLocaleString('es-MX');
+  await saveInventario();
+  renderTable();
+
+  const known = catalog[sku];
+  if(known){
+    beepKnown();
+    showFeedback('ok', sku, known.nombre + (known.posicion ? ' · ' + known.posicion : ''));
+  } else {
+    beepNew();
+    showFeedback('new', sku, 'SKU nuevo, sin datos de catálogo', true);
+  }
+}
+
+function showFeedback(type, sku, text, offerAdd){
+  const fb = document.getElementById('feedback');
+  fb.className = 'show ' + type;
+  document.getElementById('fbText').innerHTML =
+    '<span class="fb-sku">' + escapeHtml(sku) + '</span> — ' + escapeHtml(text) +
+    ' &nbsp;·&nbsp; cantidad: ' + inventario[sku].cantidad;
+  const btn = document.getElementById('fbActionBtn');
+  if(offerAdd){
+    btn.style.display = 'inline-block';
+    btn.textContent = 'Agregar datos';
+    btn.onclick = ()=> openModal(sku);
+  } else {
+    btn.style.display = 'none';
+  }
+}
+function hideFeedback(){
+  document.getElementById('feedback').className = '';
+}
+
+/* ---------- tabla ---------- */
+function renderTable(){
+  const wrap = document.getElementById('tableWrap');
+  const search = (document.getElementById('searchBox').value || '').toLowerCase();
+  const skus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
+
+  let totalPiezas = 0, missing = 0;
+  skus.forEach(s=>{
+    totalPiezas += inventario[s].cantidad;
+    if(!catalog[s]) missing++;
+  });
+  document.getElementById('statTotal').textContent = totalPiezas;
+  document.getElementById('statSkus').textContent = skus.length;
+  document.getElementById('statMissing').textContent = missing;
+
+  const filtered = skus.filter(s=>{
+    if(!search) return true;
+    const c = catalog[s];
+    return s.toLowerCase().includes(search) || (c && c.nombre && c.nombre.toLowerCase().includes(search));
+  });
+
+  if(filtered.length === 0){
+    wrap.innerHTML = '<div class="empty">Todavía no hay piezas escaneadas. Usa la pistola o la cámara para empezar.</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr>' +
+    '<th>SKU</th><th>Nombre</th><th>Posición</th><th>Categoría</th><th>Cantidad</th><th>Última lectura</th><th></th>' +
+    '</tr></thead><tbody>';
+
+  filtered.forEach(sku=>{
+    const c = catalog[sku];
+    const inv = inventario[sku];
+    html += '<tr>' +
+      '<td class="sku-cell">' + escapeHtml(sku) + (c ? '' : '<span class="badge-missing">sin datos</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.nombre||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.posicion||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.categoria||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td class="qty-cell">' + inv.cantidad + '</td>' +
+      '<td class="muted-text">' + escapeHtml(inv.ultimo||'') + '</td>' +
+      '<td class="row-actions">' +
+        '<button class="row-btn" onclick="openModal(\'' + escapeAttr(sku) + '\')">' + (c?'Editar':'Agregar') + '</button>' +
+        '<button class="row-btn" onclick="decrementSku(\'' + escapeAttr(sku) + '\')" title="Restar una pieza">-1</button>' +
+        '<button class="row-btn danger" onclick="deleteSku(\'' + escapeAttr(sku) + '\')" title="Eliminar este SKU del conteo">Eliminar</button>' +
+      '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+/* ---------- corregir conteo ---------- */
+async function decrementSku(sku){
+  if(!inventario[sku]) return;
+  inventario[sku].cantidad -= 1;
+  if(inventario[sku].cantidad <= 0){
+    delete inventario[sku];
+  }
+  await saveInventario();
+  renderTable();
+}
+async function deleteSku(sku){
+  if(!inventario[sku]) return;
+  if(!confirm('¿Eliminar el SKU ' + sku + ' y su conteo por completo?')) return;
+  delete inventario[sku];
+  await saveInventario();
+  renderTable();
+}
+
+/* ---------- modal catálogo ---------- */
+function openModal(sku){
+  currentModalSku = sku;
+  document.getElementById('modalSku').textContent = sku;
+  const c = catalog[sku] || {};
+  document.getElementById('fNombre').value = c.nombre || '';
+  document.getElementById('fPosicion').value = c.posicion || '';
+  document.getElementById('fCategoria').value = c.categoria || '';
+  document.getElementById('modalBg').classList.add('show');
+}
+function closeModal(){
+  document.getElementById('modalBg').classList.remove('show');
+  currentModalSku = null;
+}
+async function saveModal(){
+  if(!currentModalSku) return;
+  catalog[currentModalSku] = {
+    nombre: document.getElementById('fNombre').value.trim(),
+    posicion: document.getElementById('fPosicion').value.trim(),
+    categoria: document.getElementById('fCategoria').value.trim()
+  };
+  await saveCatalog();
+  closeModal();
+  renderTable();
+}
+
+/* ---------- importar catálogo (excel / csv) ---------- */
+function handleImport(evt){
+  const file = evt.target.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = async (e)=>{
+    try{
+      const data = new Uint8Array(e.target.result);
+      const workbook = XLSX.read(data, { type: 'array' });
+      const sheet = workbook.Sheets[workbook.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      let count = 0;
+      rows.forEach(row=>{
+        const sku = String(row.SKU || row.sku || row.Sku || '').trim();
+        if(!sku) return;
+        catalog[sku] = {
+          nombre: String(row.Nombre || row.nombre || row.NOMBRE || '').trim(),
+          posicion: String(row.Posicion || row.posicion || row['Posición'] || row['posición'] || '').trim(),
+          categoria: String(row.Categoria || row.categoria || row['Categoría'] || row['categoría'] || '').trim()
+        };
+        count++;
+      });
+      await saveCatalog();
+      renderTable();
+      alert('Catálogo importado: ' + count + ' SKU cargados.');
+    }catch(err){
+      console.error(err);
+      alert('No se pudo leer el archivo. Verifica que tenga columnas SKU, Nombre, Posición y Categoría.');
+    }
+    evt.target.value = '';
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+/* ---------- exportar ---------- */
+function exportCsv(){
+  const skus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
+  let csv = 'SKU,Nombre,Posicion,Categoria,Cantidad,UltimaLectura\n';
+  skus.forEach(sku=>{
+    const c = catalog[sku] || {};
+    const inv = inventario[sku];
+    const row = [sku, c.nombre||'', c.posicion||'', c.categoria||'', inv.cantidad, inv.ultimo||'']
+      .map(v => '"' + String(v).replace(/"/g,'""') + '"').join(',');
+    csv += row + '\n';
+  });
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'inventario_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+/* ---------- reset ---------- */
+async function confirmReset(){
+  if(confirm('Esto borrará todas las cantidades contadas (el catálogo de nombres y posiciones se conserva). ¿Continuar?')){
+    inventario = {};
+    await saveInventario();
+    renderTable();
+  }
+}
+
+/* ---------- utilidades ---------- */
+function escapeHtml(str){
+  return String(str).replace(/[&<>"']/g, s=>({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[s]));
+}
+function escapeAttr(str){ return String(str).replace(/'/g, "\\'"); }
+
+/* ---------- init ---------- */
+document.getElementById('footerNote').textContent =
+  'Los datos se guardan en la nube y se sincronizan al instante con todos los que abran este sitio, desde cualquier celular o computadora. El escaneo funciona con pistola USB/Bluetooth (modo teclado) o con la cámara del celular leyendo el mismo código de barras.';
+loadData();
+</script>
+</body>
+</html>
