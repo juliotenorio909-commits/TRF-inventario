@@ -118,6 +118,9 @@
     color: var(--text); font-family: var(--mono); font-size: 0.95rem; padding: 10px 12px;
   }
   .label-raw{ color: var(--muted); font-size: 0.75rem; margin-top: 10px; word-break: break-word; }
+  .ai-status{ font-size: 0.72rem; margin-top: 10px; padding: 6px 10px; border-radius: 6px; display:inline-block; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
+  .ai-status.ai-on{ color: var(--ok); border-color: var(--ok-dim); }
+  .ai-status.ai-off{ color: var(--warn); border-color: var(--warn-dim); }
   #gunInput{ position:absolute; opacity:0; pointer-events:none; }
 
   /* camera */
@@ -252,6 +255,7 @@
       <input type="file" id="labelPhotoInput" accept="image/*" capture="environment" onchange="handleLabelPhoto(event)" style="display:none;">
       <button class="primary" id="labelPhotoBtn" onclick="document.getElementById('labelPhotoInput').click()">Tomar foto de la etiqueta</button>
       <div class="gun-hint">Úsalo cuando el código de barras no coincida con el SKU real impreso en la etiqueta. Toma la foto lo más de frente y enfocada posible.</div>
+      <div id="aiStatusBadge" class="ai-status">Lectura con IA: aún no probada</div>
       <div id="labelStatus"></div>
       <div id="labelResult"></div>
     </div>
@@ -547,7 +551,41 @@ function hideFeedback(){
   document.getElementById('feedback').className = '';
 }
 
-/* ---------- foto de etiqueta (OCR) ---------- */
+/* ---------- foto de etiqueta (IA con Gemini + respaldo OCR local) ---------- */
+let lastAiLabelData = null;
+
+function fileToBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(String(reader.result).split(',')[1] || '');
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+function setAiStatus(active, reason){
+  const badge = document.getElementById('aiStatusBadge');
+  if(!badge) return;
+  if(active){
+    badge.textContent = 'Lectura con IA: activa';
+    badge.className = 'ai-status ai-on';
+  } else {
+    const motivos = {
+      no_configurada: 'no está configurada todavía',
+      limite_alcanzado: 'se alcanzó el límite diario gratuito',
+      error_api: 'error del servicio de IA',
+      respuesta_no_valida: 'respuesta inesperada del servicio',
+      error_red: 'sin conexión con el servicio de IA',
+      sin_imagen: 'error interno',
+      body_invalido: 'error interno',
+      method_not_allowed: 'error interno'
+    };
+    const motivo = motivos[reason] || 'no disponible por el momento';
+    badge.textContent = 'Lectura con IA: no disponible (' + motivo + ') — usando lectura básica';
+    badge.className = 'ai-status ai-off';
+  }
+}
+
 async function handleLabelPhoto(evt){
   const file = evt.target.files[0];
   if(!file) return;
@@ -557,28 +595,59 @@ async function handleLabelPhoto(evt){
   const btn = document.getElementById('labelPhotoBtn');
   btn.disabled = true;
   resultEl.innerHTML = '';
-  statusEl.textContent = 'Leyendo etiqueta… puede tardar unos segundos.';
+  lastAiLabelData = null;
+  let aiSucceeded = false;
+
+  statusEl.textContent = 'Leyendo etiqueta con IA…';
   try{
-    const { data } = await Tesseract.recognize(file, 'eng', {
-      logger: m=>{
-        if(m.status === 'recognizing text'){
-          statusEl.textContent = 'Leyendo etiqueta… ' + Math.round((m.progress||0)*100) + '%';
-        }
-      }
+    const base64 = await fileToBase64(file);
+    const resp = await fetch('/.netlify/functions/read-label', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ imageBase64: base64, mimeType: file.type || 'image/jpeg' })
     });
-    const text = data && data.text ? data.text : '';
-    const candidates = extractSkuCandidates(text);
-    renderLabelResult(candidates, text);
-    statusEl.textContent = candidates.length
-      ? 'Toca el código correcto, o corrígelo si hace falta:'
-      : 'No se detectó un código claro. Escríbelo manualmente:';
+    const json = await resp.json();
+    if(json.ok && json.data){
+      aiSucceeded = true;
+      setAiStatus(true);
+      lastAiLabelData = json.data;
+      const sku = String(json.data.sku || '').trim().toUpperCase();
+      renderLabelResult(sku ? [sku] : [], '', json.data);
+      statusEl.textContent = sku
+        ? 'La IA detectó este código — confírmalo o corrígelo:'
+        : 'La IA no pudo identificar el código en la foto — escríbelo manualmente:';
+    } else {
+      setAiStatus(false, json.reason);
+    }
   }catch(err){
     console.error(err);
-    statusEl.textContent = 'No se pudo leer la foto. Intenta con más luz y más de frente.';
-  }finally{
-    btn.disabled = false;
-    evt.target.value = '';
+    setAiStatus(false, 'error_red');
   }
+
+  if(!aiSucceeded){
+    statusEl.textContent = 'Leyendo etiqueta (modo básico)… puede tardar unos segundos.';
+    try{
+      const { data } = await Tesseract.recognize(file, 'eng', {
+        logger: m=>{
+          if(m.status === 'recognizing text'){
+            statusEl.textContent = 'Leyendo etiqueta (modo básico)… ' + Math.round((m.progress||0)*100) + '%';
+          }
+        }
+      });
+      const text = data && data.text ? data.text : '';
+      const candidates = extractSkuCandidates(text);
+      renderLabelResult(candidates, text, null);
+      statusEl.textContent = candidates.length
+        ? 'Toca el código correcto, o corrígelo si hace falta:'
+        : 'No se detectó un código claro. Escríbelo manualmente:';
+    }catch(err){
+      console.error(err);
+      statusEl.textContent = 'No se pudo leer la foto. Intenta con más luz y más de frente.';
+    }
+  }
+
+  btn.disabled = false;
+  evt.target.value = '';
 }
 
 function extractSkuCandidates(rawText){
@@ -600,7 +669,7 @@ function extractSkuCandidates(rawText){
   return candidates;
 }
 
-function renderLabelResult(candidates, rawText){
+function renderLabelResult(candidates, rawText, aiData){
   const resultEl = document.getElementById('labelResult');
   let html = '';
   if(candidates.length){
@@ -615,7 +684,10 @@ function renderLabelResult(candidates, rawText){
     '<input id="labelManualInput" placeholder="Código del SKU" value="' + escapeAttr(candidates[0]||'') + '">' +
     '<button class="row-btn" onclick="confirmLabelCode()">Usar este código</button>' +
     '</div>';
-  if(rawText && rawText.trim()){
+  if(aiData){
+    const extra = [aiData.descripcion, aiData.marca, aiData.modelo, aiData.anio].filter(Boolean).join(' · ');
+    if(extra) html += '<div class="label-raw">Detectado por IA: ' + escapeHtml(extra) + '</div>';
+  } else if(rawText && rawText.trim()){
     html += '<div class="label-raw">Texto leído: ' + escapeHtml(rawText.trim().replace(/\n+/g,' · ')) + '</div>';
   }
   resultEl.innerHTML = html;
@@ -709,7 +781,19 @@ async function deleteSku(sku){
 function openModal(sku){
   currentModalSku = sku;
   document.getElementById('modalSku').textContent = sku;
-  const c = catalog[sku] || {};
+  let c = catalog[sku];
+  if(!c && lastAiLabelData && String(lastAiLabelData.sku||'').trim().toUpperCase() === sku.toUpperCase()){
+    c = {
+      descripcion: lastAiLabelData.descripcion || '',
+      marca: lastAiLabelData.marca || '',
+      modelo: lastAiLabelData.modelo || '',
+      anio: lastAiLabelData.anio || '',
+      referencia: lastAiLabelData.referencia || '',
+      precio: '',
+      stock: ''
+    };
+  }
+  c = c || {};
   document.getElementById('fDescripcion').value = c.descripcion || '';
   document.getElementById('fMarca').value = c.marca || '';
   document.getElementById('fModelo').value = c.modelo || '';
