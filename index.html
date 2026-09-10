@@ -237,7 +237,7 @@
   <div class="panel">
     <h2>Catálogo e inventario</h2>
     <div class="toolbar">
-      <input type="text" id="searchBox" placeholder="Buscar por SKU o nombre…" oninput="renderTable()">
+      <input type="text" id="searchBox" placeholder="Buscar por SKU, descripción, marca, modelo o referencia…" oninput="renderTable()">
       <div class="spacer"></div>
       <button onclick="document.getElementById('importFile').click()">Importar catálogo</button>
       <input type="file" id="importFile" accept=".csv,.xlsx,.xls" onchange="handleImport(event)">
@@ -254,9 +254,13 @@
   <div class="modal">
     <h3>Datos de la pieza</h3>
     <div class="modal-sku" id="modalSku"></div>
-    <div class="field"><label>Nombre</label><input id="fNombre" placeholder="Ej. Balatas delanteras"></div>
-    <div class="field"><label>Posición</label><input id="fPosicion" placeholder="Ej. Delantera izquierda"></div>
-    <div class="field"><label>Categoría</label><input id="fCategoria" placeholder="Ej. Frenos"></div>
+    <div class="field"><label>Descripción</label><input id="fDescripcion" placeholder="Ej. Amortiguador delantero der/izq"></div>
+    <div class="field"><label>Marca</label><input id="fMarca" placeholder="Ej. Volkswagen"></div>
+    <div class="field"><label>Modelo</label><input id="fModelo" placeholder="Ej. Jetta A4"></div>
+    <div class="field"><label>Año</label><input id="fAnio" placeholder="Ej. 1999 al 2007"></div>
+    <div class="field"><label>Referencia</label><input id="fReferencia" placeholder="Ej. 1J0-413-031BH"></div>
+    <div class="field"><label>Precio</label><input id="fPrecio" placeholder="Ej. $850.00"></div>
+    <div class="field"><label>Stock en catálogo</label><input id="fStock" placeholder="Ej. 50"></div>
     <div class="modal-actions">
       <button onclick="closeModal()">Cancelar</button>
       <button class="primary" onclick="saveModal()">Guardar</button>
@@ -486,7 +490,8 @@ async function processScan(sku){
   const known = catalog[sku];
   if(known){
     beepKnown();
-    showFeedback('ok', sku, known.nombre + (known.posicion ? ' · ' + known.posicion : ''));
+    const detalle = [known.descripcion, [known.marca, known.modelo].filter(Boolean).join(' ')].filter(Boolean).join(' · ');
+    showFeedback('ok', sku, detalle || 'Pieza reconocida');
   } else {
     beepNew();
     showFeedback('new', sku, 'SKU nuevo, sin datos de catálogo', true);
@@ -530,7 +535,9 @@ function renderTable(){
   const filtered = skus.filter(s=>{
     if(!search) return true;
     const c = catalog[s];
-    return s.toLowerCase().includes(search) || (c && c.nombre && c.nombre.toLowerCase().includes(search));
+    if(s.toLowerCase().includes(search)) return true;
+    if(!c) return false;
+    return ['descripcion','marca','modelo','referencia'].some(k => (c[k]||'').toLowerCase().includes(search));
   });
 
   if(filtered.length === 0){
@@ -539,17 +546,18 @@ function renderTable(){
   }
 
   let html = '<table><thead><tr>' +
-    '<th>SKU</th><th>Nombre</th><th>Posición</th><th>Categoría</th><th>Cantidad</th><th>Última lectura</th><th></th>' +
+    '<th>SKU</th><th>Descripción</th><th>Marca / Modelo</th><th>Referencia</th><th>Cantidad</th><th>Última lectura</th><th></th>' +
     '</tr></thead><tbody>';
 
   filtered.forEach(sku=>{
     const c = catalog[sku];
     const inv = inventario[sku];
+    const marcaModelo = c ? [c.marca, c.modelo].filter(Boolean).join(' · ') : '';
     html += '<tr>' +
       '<td class="sku-cell">' + escapeHtml(sku) + (c ? '' : '<span class="badge-missing">sin datos</span>') + '</td>' +
-      '<td>' + (c ? escapeHtml(c.nombre||'—') : '<span class="muted-text">—</span>') + '</td>' +
-      '<td>' + (c ? escapeHtml(c.posicion||'—') : '<span class="muted-text">—</span>') + '</td>' +
-      '<td>' + (c ? escapeHtml(c.categoria||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.descripcion||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td>' + (c && marcaModelo ? escapeHtml(marcaModelo) : '<span class="muted-text">—</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.referencia||'—') : '<span class="muted-text">—</span>') + '</td>' +
       '<td class="qty-cell">' + inv.cantidad + '</td>' +
       '<td class="muted-text">' + escapeHtml(inv.ultimo||'') + '</td>' +
       '<td class="row-actions">' +
@@ -586,9 +594,13 @@ function openModal(sku){
   currentModalSku = sku;
   document.getElementById('modalSku').textContent = sku;
   const c = catalog[sku] || {};
-  document.getElementById('fNombre').value = c.nombre || '';
-  document.getElementById('fPosicion').value = c.posicion || '';
-  document.getElementById('fCategoria').value = c.categoria || '';
+  document.getElementById('fDescripcion').value = c.descripcion || '';
+  document.getElementById('fMarca').value = c.marca || '';
+  document.getElementById('fModelo').value = c.modelo || '';
+  document.getElementById('fAnio').value = c.anio || '';
+  document.getElementById('fReferencia').value = c.referencia || '';
+  document.getElementById('fPrecio').value = c.precio || '';
+  document.getElementById('fStock').value = c.stock || '';
   document.getElementById('modalBg').classList.add('show');
 }
 function closeModal(){
@@ -598,9 +610,13 @@ function closeModal(){
 async function saveModal(){
   if(!currentModalSku) return;
   catalog[currentModalSku] = {
-    nombre: document.getElementById('fNombre').value.trim(),
-    posicion: document.getElementById('fPosicion').value.trim(),
-    categoria: document.getElementById('fCategoria').value.trim()
+    descripcion: document.getElementById('fDescripcion').value.trim(),
+    marca: document.getElementById('fMarca').value.trim(),
+    modelo: document.getElementById('fModelo').value.trim(),
+    anio: document.getElementById('fAnio').value.trim(),
+    referencia: document.getElementById('fReferencia').value.trim(),
+    precio: document.getElementById('fPrecio').value.trim(),
+    stock: document.getElementById('fStock').value.trim()
   };
   await saveCatalog();
   closeModal();
@@ -618,14 +634,22 @@ function handleImport(evt){
       const workbook = XLSX.read(data, { type: 'array' });
       const sheet = workbook.Sheets[workbook.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+      const pick = (row, names) => {
+        for(const n of names){ if(row[n] !== undefined && row[n] !== null && String(row[n]).trim() !== '') return String(row[n]).trim(); }
+        return '';
+      };
       let count = 0;
       rows.forEach(row=>{
-        const sku = String(row.SKU || row.sku || row.Sku || '').trim();
+        const sku = pick(row, ['Código','Codigo','código','codigo','SKU','sku','Sku']);
         if(!sku) return;
         catalog[sku] = {
-          nombre: String(row.Nombre || row.nombre || row.NOMBRE || '').trim(),
-          posicion: String(row.Posicion || row.posicion || row['Posición'] || row['posición'] || '').trim(),
-          categoria: String(row.Categoria || row.categoria || row['Categoría'] || row['categoría'] || '').trim()
+          descripcion: pick(row, ['Descripción','Descripcion','descripción','descripcion','Nombre','nombre']),
+          marca: pick(row, ['Marca','marca']),
+          modelo: pick(row, ['Modelo','modelo']),
+          anio: pick(row, ['Año','Ano','año','ano','AÑO']),
+          referencia: pick(row, ['Referencia','referencia']),
+          precio: pick(row, ['Precio','precio']),
+          stock: pick(row, ['Stock','stock'])
         };
         count++;
       });
@@ -634,7 +658,7 @@ function handleImport(evt){
       alert('Catálogo importado: ' + count + ' SKU cargados.');
     }catch(err){
       console.error(err);
-      alert('No se pudo leer el archivo. Verifica que tenga columnas SKU, Nombre, Posición y Categoría.');
+      alert('No se pudo leer el archivo. Verifica que tenga una columna de Código (o SKU) con el identificador de cada pieza.');
     }
     evt.target.value = '';
   };
@@ -644,11 +668,11 @@ function handleImport(evt){
 /* ---------- exportar ---------- */
 function exportCsv(){
   const skus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
-  let csv = 'SKU,Nombre,Posicion,Categoria,Cantidad,UltimaLectura\n';
+  let csv = 'SKU,Descripcion,Marca,Modelo,Anio,Referencia,Precio,Stock,Cantidad,UltimaLectura\n';
   skus.forEach(sku=>{
     const c = catalog[sku] || {};
     const inv = inventario[sku];
-    const row = [sku, c.nombre||'', c.posicion||'', c.categoria||'', inv.cantidad, inv.ultimo||'']
+    const row = [sku, c.descripcion||'', c.marca||'', c.modelo||'', c.anio||'', c.referencia||'', c.precio||'', c.stock||'', inv.cantidad, inv.ultimo||'']
       .map(v => '"' + String(v).replace(/"/g,'""') + '"').join(',');
     csv += row + '\n';
   });
