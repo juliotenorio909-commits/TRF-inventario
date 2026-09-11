@@ -118,6 +118,7 @@
     color: var(--text); font-family: var(--mono); font-size: 0.95rem; padding: 10px 12px;
   }
   .label-raw{ color: var(--muted); font-size: 0.75rem; margin-top: 10px; word-break: break-word; }
+  .manual-sku-row{ margin: 14px 0 18px; }
   .ai-status{ font-size: 0.72rem; margin-top: 10px; padding: 6px 10px; border-radius: 6px; display:inline-block; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
   .ai-status.ai-on{ color: var(--ok); border-color: var(--ok-dim); }
   .ai-status.ai-off{ color: var(--warn); border-color: var(--warn-dim); }
@@ -232,6 +233,11 @@
       <div class="tab active" id="tabGun" onclick="setMode('gun')">Pistola lectora</div>
       <div class="tab" id="tabCam" onclick="setMode('cam')">Cámara del celular</div>
       <div class="tab" id="tabLabel" onclick="setMode('label')">Foto de etiqueta</div>
+    </div>
+
+    <div class="label-manual manual-sku-row">
+      <input id="manualSkuInput" placeholder="O escribe el SKU a mano…" onkeydown="if(event.key==='Enter'){ event.preventDefault(); submitManualSku(); }">
+      <button class="row-btn" onclick="submitManualSku()">Agregar</button>
     </div>
 
     <div class="scan-mode active" id="modeGun">
@@ -822,6 +828,7 @@ function renderTable(){
       '<td class="row-actions">' +
         '<button class="row-btn" onclick="openModal(\'' + escapeAttr(sku) + '\')">' + (c?'Editar':'Agregar') + '</button>' +
         '<button class="row-btn" onclick="decrementSku(\'' + escapeAttr(sku) + '\')" title="Restar una pieza">-1</button>' +
+        '<button class="row-btn" onclick="incrementSku(\'' + escapeAttr(sku) + '\')" title="Sumar una pieza">+1</button>' +
         '<button class="row-btn danger" onclick="deleteSku(\'' + escapeAttr(sku) + '\')" title="Eliminar este SKU del conteo">Eliminar</button>' +
       '</td>' +
       '</tr>';
@@ -830,7 +837,22 @@ function renderTable(){
   wrap.innerHTML = html;
 }
 
+async function submitManualSku(){
+  const input = document.getElementById('manualSkuInput');
+  const code = input ? input.value.trim() : '';
+  if(!code) return;
+  await processScan(code);
+  input.value = '';
+}
+
 /* ---------- corregir conteo ---------- */
+async function incrementSku(sku){
+  if(!inventario[sku]) return;
+  inventario[sku].cantidad += 1;
+  inventario[sku].ultimo = new Date().toLocaleString('es-MX');
+  await saveInventario();
+  renderTable();
+}
 async function decrementSku(sku){
   if(!inventario[sku]) return;
   inventario[sku].cantidad -= 1;
