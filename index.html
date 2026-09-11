@@ -602,13 +602,22 @@ async function handleLabelPhoto(evt){
   lastAiLabelData = null;
   let aiSucceeded = false;
 
+  statusEl.textContent = 'Preparando la foto…';
+  let canvas;
+  try{
+    canvas = await preprocessLabelImage(file);
+  }catch(err){
+    console.error(err);
+    canvas = null;
+  }
+
   statusEl.textContent = 'Leyendo etiqueta con IA…';
   try{
-    const base64 = await fileToBase64(file);
+    const base64 = canvas ? await canvasToBase64(canvas) : await fileToBase64(file);
     const resp = await fetch('/.netlify/functions/read-label', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ imageBase64: base64, mimeType: file.type || 'image/jpeg' })
+      body: JSON.stringify({ imageBase64: base64, mimeType: 'image/jpeg' })
     });
     const json = await resp.json();
     if(json.ok && json.data){
@@ -631,7 +640,8 @@ async function handleLabelPhoto(evt){
   if(!aiSucceeded){
     statusEl.textContent = 'Leyendo etiqueta (modo básico)… puede tardar unos segundos.';
     try{
-      const { data } = await Tesseract.recognize(file, 'eng', {
+      const source = canvas || file;
+      const { data } = await Tesseract.recognize(source, 'eng', {
         logger: m=>{
           if(m.status === 'recognizing text'){
             statusEl.textContent = 'Leyendo etiqueta (modo básico)… ' + Math.round((m.progress||0)*100) + '%';
@@ -639,7 +649,7 @@ async function handleLabelPhoto(evt){
         }
       });
       const text = data && data.text ? data.text : '';
-      const candidates = extractSkuCandidates(text);
+      const candidates = extractSkuCandidates(text, data && data.words);
       renderLabelResult(candidates, text, null);
       statusEl.textContent = candidates.length
         ? 'Toca el código correcto, o corrígelo si hace falta:'
@@ -654,10 +664,67 @@ async function handleLabelPhoto(evt){
   evt.target.value = '';
 }
 
-function extractSkuCandidates(rawText){
+/* corrige orientación (fotos de celular a veces vienen "giradas" en los
+   datos aunque se vean derechas) y reduce el tamaño para que la lectura
+   sea más rápida y confiable */
+async function preprocessLabelImage(file){
+  let bitmap;
+  try{
+    bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  }catch(e){
+    bitmap = await new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.onload = ()=>resolve(img);
+      img.onerror = reject;
+      img.src = URL.createObjectURL(file);
+    });
+  }
+  const w = bitmap.width, h = bitmap.height;
+  const maxDim = 1600;
+  const scale = Math.min(1, maxDim / Math.max(w, h));
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.max(1, Math.round(w * scale));
+  canvas.height = Math.max(1, Math.round(h * scale));
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+
+function canvasToBase64(canvas){
+  return new Promise(resolve=>{
+    canvas.toBlob(blob=>{
+      const reader = new FileReader();
+      reader.onload = ()=>resolve(String(reader.result).split(',')[1] || '');
+      reader.readAsDataURL(blob);
+    }, 'image/jpeg', 0.9);
+  });
+}
+
+function extractSkuCandidates(rawText, words){
+  // si tenemos las palabras detectadas con su tamaño, priorizamos el texto
+  // más grande de la etiqueta (casi siempre es el SKU, como en tus fotos)
+  if(Array.isArray(words) && words.length){
+    const seen = new Set();
+    const scored = [];
+    words.forEach(w=>{
+      const raw = String(w.text || '').toUpperCase().replace(/[^A-Z0-9\-]/g,'');
+      if(raw.length < 4 || raw.length > 12) return;
+      const hasLetter = /[A-Z]/.test(raw);
+      const hasDigit = /[0-9]/.test(raw);
+      if(!hasLetter || !hasDigit) return;
+      if(seen.has(raw)) return;
+      seen.add(raw);
+      const bbox = w.bbox || {};
+      const height = (bbox.y1 != null && bbox.y0 != null) ? (bbox.y1 - bbox.y0) : 0;
+      scored.push({ code: raw, height });
+    });
+    if(scored.length){
+      scored.sort((a,b)=> b.height - a.height);
+      return scored.map(s=>s.code);
+    }
+  }
+  // respaldo si no hay datos de tamaño: buscar en el texto plano
   const upper = rawText.toUpperCase();
-  // tokens alfanuméricos de 4 a 12 caracteres que mezclan letras y números
-  // (así se distingue del número de barras, que es solo dígitos largos)
   const tokens = upper.match(/\b[A-Z0-9\-]{4,12}\b/g) || [];
   const seen = new Set();
   const candidates = [];
