@@ -119,6 +119,14 @@
   }
   .label-raw{ color: var(--muted); font-size: 0.75rem; margin-top: 10px; word-break: break-word; }
   .manual-sku-row{ margin: 14px 0 18px; }
+  .view-mode-toggle{
+    position: fixed; top: 14px; right: 14px; z-index: 50;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--muted);
+    font-size: 0.75rem; padding: 7px 12px; border-radius: 20px; cursor: pointer;
+    user-select: none;
+  }
+  .view-mode-toggle:hover{ border-color: var(--accent); color: var(--text); }
+  .view-mode-toggle.individual{ background: var(--accent-dim, var(--panel-2)); border-color: var(--accent); color: var(--accent); }
   .ai-status{ font-size: 0.72rem; margin-top: 10px; padding: 6px 10px; border-radius: 6px; display:inline-block; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
   .ai-status.ai-on{ color: var(--ok); border-color: var(--ok-dim); }
   .ai-status.ai-off{ color: var(--warn); border-color: var(--warn-dim); }
@@ -211,6 +219,8 @@
 </head>
 <body>
 <div class="wrap">
+
+  <div id="viewModeToggle" class="view-mode-toggle" onclick="toggleViewMode()" title="Cambia entre ver todo el equipo o solo lo que tú escaneaste en este dispositivo">Vista: Equipo</div>
 
   <header>
     <div class="brand">
@@ -317,6 +327,43 @@ let gunTimer = null;
 let audioCtx = null;
 let lastScan = { code: null, time: 0 };
 const SCAN_COOLDOWN_MS = 1800; // evita contar el mismo código varias veces si se queda a la vista
+
+/* ---------- identidad del dispositivo / vista individual ---------- */
+let ownerId = localStorage.getItem('trfOwnerId');
+if(!ownerId){
+  ownerId = 'dev-' + Math.random().toString(36).slice(2, 10);
+  localStorage.setItem('trfOwnerId', ownerId);
+}
+let ownerName = localStorage.getItem('trfOwnerName') || '';
+let viewMode = localStorage.getItem('trfViewMode') || 'team';
+
+function updateViewModeBadge(){
+  const el = document.getElementById('viewModeToggle');
+  if(!el) return;
+  if(viewMode === 'individual'){
+    el.textContent = 'Vista: Individual' + (ownerName ? ' (' + ownerName + ')' : '');
+    el.classList.add('individual');
+  } else {
+    el.textContent = 'Vista: Equipo';
+    el.classList.remove('individual');
+  }
+}
+
+function toggleViewMode(){
+  if(viewMode === 'team'){
+    if(!ownerName){
+      const name = prompt('¿Cómo quieres identificar tus escaneos en este dispositivo? (tu nombre o apodo)', '');
+      ownerName = (name || '').trim();
+      localStorage.setItem('trfOwnerName', ownerName);
+    }
+    viewMode = 'individual';
+  } else {
+    viewMode = 'team';
+  }
+  localStorage.setItem('trfViewMode', viewMode);
+  updateViewModeBadge();
+  renderTable();
+}
 
 /* ---------- Firebase (base de datos compartida en tiempo real) ---------- */
 const firebaseConfig = {
@@ -528,6 +575,8 @@ async function processScan(sku){
   if(!inventario[sku]) inventario[sku] = { cantidad: 0, ultimo: '' };
   inventario[sku].cantidad += 1;
   inventario[sku].ultimo = now.toLocaleString('es-MX');
+  inventario[sku].lastOwnerId = ownerId;
+  inventario[sku].lastOwnerName = ownerName || '';
   await saveInventario();
   renderTable();
 
@@ -786,18 +835,24 @@ async function confirmLabelCode(){
 function renderTable(){
   const wrap = document.getElementById('tableWrap');
   const search = (document.getElementById('searchBox').value || '').toLowerCase();
-  const skus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
+  const allSkus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
+
+  // en vista individual, solo se muestran (y cuentan) los SKUs cuyo último
+  // movimiento lo hizo este mismo dispositivo; los datos compartidos no cambian
+  const viewSkus = viewMode === 'individual'
+    ? allSkus.filter(s => inventario[s].lastOwnerId === ownerId)
+    : allSkus;
 
   let totalPiezas = 0, missing = 0;
-  skus.forEach(s=>{
+  viewSkus.forEach(s=>{
     totalPiezas += inventario[s].cantidad;
     if(!catalog[s]) missing++;
   });
   document.getElementById('statTotal').textContent = totalPiezas;
-  document.getElementById('statSkus').textContent = skus.length;
+  document.getElementById('statSkus').textContent = viewSkus.length;
   document.getElementById('statMissing').textContent = missing;
 
-  const filtered = skus.filter(s=>{
+  const filtered = viewSkus.filter(s=>{
     if(!search) return true;
     const c = catalog[s];
     if(s.toLowerCase().includes(search)) return true;
@@ -824,7 +879,7 @@ function renderTable(){
       '<td>' + (c && marcaModelo ? escapeHtml(marcaModelo) : '<span class="muted-text">—</span>') + '</td>' +
       '<td>' + (c ? escapeHtml(c.referencia||'—') : '<span class="muted-text">—</span>') + '</td>' +
       '<td class="qty-cell">' + inv.cantidad + '</td>' +
-      '<td class="muted-text">' + escapeHtml(inv.ultimo||'') + '</td>' +
+      '<td class="muted-text">' + escapeHtml(inv.ultimo||'') + (inv.lastOwnerName ? ' · ' + escapeHtml(inv.lastOwnerName) : '') + '</td>' +
       '<td class="row-actions">' +
         '<button class="row-btn" onclick="openModal(\'' + escapeAttr(sku) + '\')">' + (c?'Editar':'Agregar') + '</button>' +
         '<button class="row-btn" onclick="decrementSku(\'' + escapeAttr(sku) + '\')" title="Restar una pieza">-1</button>' +
@@ -850,6 +905,8 @@ async function incrementSku(sku){
   if(!inventario[sku]) return;
   inventario[sku].cantidad += 1;
   inventario[sku].ultimo = new Date().toLocaleString('es-MX');
+  inventario[sku].lastOwnerId = ownerId;
+  inventario[sku].lastOwnerName = ownerName || '';
   await saveInventario();
   renderTable();
 }
@@ -1013,6 +1070,7 @@ function escapeAttr(str){ return String(str).replace(/'/g, "\\'"); }
 /* ---------- init ---------- */
 document.getElementById('footerNote').textContent =
   'Los datos se guardan en la nube y se sincronizan al instante con todos los que abran este sitio, desde cualquier celular o computadora. El escaneo funciona con pistola USB/Bluetooth (modo teclado) o con la cámara del celular leyendo el mismo código de barras.';
+updateViewModeBadge();
 loadData();
 </script>
 </body>
