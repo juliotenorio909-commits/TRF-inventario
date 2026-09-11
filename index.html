@@ -1034,12 +1034,15 @@ function handleImport(evt){
 
 /* ---------- exportar ---------- */
 function exportCsv(){
-  const skus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
-  let csv = 'SKU,Descripcion,Marca,Modelo,Anio,Referencia,Precio,Stock,Cantidad,UltimaLectura\n';
+  const allSkus = Object.keys(inventario).sort((a,b)=> a.localeCompare(b));
+  const skus = viewMode === 'individual'
+    ? allSkus.filter(s => inventario[s].lastOwnerId === ownerId)
+    : allSkus;
+  let csv = 'SKU,Descripcion,Marca,Modelo,Anio,Referencia,Precio,Stock,Cantidad,UltimaLectura,EscaneadoPor\n';
   skus.forEach(sku=>{
     const c = catalog[sku] || {};
     const inv = inventario[sku];
-    const row = [sku, c.descripcion||'', c.marca||'', c.modelo||'', c.anio||'', c.referencia||'', c.precio||'', c.stock||'', inv.cantidad, inv.ultimo||'']
+    const row = [sku, c.descripcion||'', c.marca||'', c.modelo||'', c.anio||'', c.referencia||'', c.precio||'', c.stock||'', inv.cantidad, inv.ultimo||'', inv.lastOwnerName||'']
       .map(v => '"' + String(v).replace(/"/g,'""') + '"').join(',');
     csv += row + '\n';
   });
@@ -1047,7 +1050,8 @@ function exportCsv(){
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'inventario_' + new Date().toISOString().slice(0,10) + '.csv';
+  const suffix = viewMode === 'individual' ? '_individual_' + (ownerName || ownerId) : '';
+  a.download = 'inventario' + suffix + '_' + new Date().toISOString().slice(0,10) + '.csv';
   a.click();
   URL.revokeObjectURL(url);
 }
