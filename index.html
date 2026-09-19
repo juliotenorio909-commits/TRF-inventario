@@ -127,6 +127,9 @@
   }
   .view-mode-toggle:hover{ border-color: var(--accent); color: var(--text); }
   .view-mode-toggle.individual{ background: var(--accent-dim, var(--panel-2)); border-color: var(--accent); color: var(--accent); }
+  .pending-actions{ margin-top: 14px; }
+  .pending-actions .primary{ width: 100%; }
+  #pendingPanel h2{ display:flex; align-items:center; gap:10px; }
   .ai-status{ font-size: 0.72rem; margin-top: 10px; padding: 6px 10px; border-radius: 6px; display:inline-block; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
   .ai-status.ai-on{ color: var(--ok); border-color: var(--ok-dim); }
   .ai-status.ai-off{ color: var(--warn); border-color: var(--warn-dim); }
@@ -282,8 +285,18 @@
     </div>
   </div>
 
+  <div class="panel" id="pendingPanel">
+    <h2>Pendientes por subir</h2>
+    <div class="gun-hint">Lo que escaneas aquí se queda solo en este dispositivo hasta que le des clic a "Subir a red". Nadie más lo ve hasta ese momento.</div>
+    <div id="pendingWrap"></div>
+    <div class="pending-actions">
+      <button class="primary" id="uploadPendingBtn" onclick="uploadPendingToRed()" disabled>Subir a red (0 piezas)</button>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>Catálogo e inventario</h2>
+    <div class="gun-hint">Este es el inventario ya confirmado y compartido con todo el equipo.</div>
     <div class="toolbar">
       <input type="text" id="searchBox" placeholder="Buscar por SKU, descripción, marca, modelo o referencia…" oninput="renderTable()">
       <div class="spacer"></div>
@@ -327,6 +340,99 @@ let gunTimer = null;
 let audioCtx = null;
 let lastScan = { code: null, time: 0 };
 const SCAN_COOLDOWN_MS = 1800; // evita contar el mismo código varias veces si se queda a la vista
+
+/* ---------- pendientes por subir (locales a este dispositivo hasta confirmar) ---------- */
+let pending = {}; // { sku: { cantidad } }
+try{
+  const saved = localStorage.getItem('trfPending');
+  if(saved) pending = JSON.parse(saved);
+}catch(e){ pending = {}; }
+
+function savePendingLocal(){
+  try{ localStorage.setItem('trfPending', JSON.stringify(pending)); }catch(e){}
+}
+
+function renderPending(){
+  const wrap = document.getElementById('pendingWrap');
+  const skus = Object.keys(pending).sort((a,b)=> a.localeCompare(b));
+  const btn = document.getElementById('uploadPendingBtn');
+  const totalPiezas = skus.reduce((sum,s)=> sum + (pending[s].cantidad||0), 0);
+  if(btn){
+    btn.textContent = 'Subir a red (' + totalPiezas + (totalPiezas===1?' pieza)':' piezas)');
+    btn.disabled = totalPiezas === 0;
+  }
+  if(!wrap) return;
+  if(skus.length === 0){
+    wrap.innerHTML = '<div class="empty">No tienes piezas pendientes por subir. Escanea algo para empezar.</div>';
+    return;
+  }
+  let html = '<table><thead><tr><th>SKU</th><th>Descripción</th><th>Cantidad</th><th></th></tr></thead><tbody>';
+  skus.forEach(sku=>{
+    const c = catalog[sku];
+    html += '<tr>' +
+      '<td class="sku-cell">' + escapeHtml(sku) + (c ? '' : '<span class="badge-missing">sin datos</span>') + '</td>' +
+      '<td>' + (c ? escapeHtml(c.descripcion||'—') : '<span class="muted-text">—</span>') + '</td>' +
+      '<td class="qty-cell">' + pending[sku].cantidad + '</td>' +
+      '<td class="row-actions">' +
+        '<button class="row-btn" onclick="decrementPending(\'' + escapeAttr(sku) + '\')" title="Restar una pieza">-1</button>' +
+        '<button class="row-btn" onclick="incrementPending(\'' + escapeAttr(sku) + '\')" title="Sumar una pieza">+1</button>' +
+        '<button class="row-btn danger" onclick="deletePending(\'' + escapeAttr(sku) + '\')" title="Quitar de pendientes">Quitar</button>' +
+      '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
+function incrementPending(sku){
+  if(!pending[sku]) return;
+  pending[sku].cantidad += 1;
+  savePendingLocal();
+  renderPending();
+}
+function decrementPending(sku){
+  if(!pending[sku]) return;
+  pending[sku].cantidad -= 1;
+  if(pending[sku].cantidad <= 0) delete pending[sku];
+  savePendingLocal();
+  renderPending();
+}
+function deletePending(sku){
+  if(!pending[sku]) return;
+  delete pending[sku];
+  savePendingLocal();
+  renderPending();
+}
+
+async function uploadPendingToRed(){
+  const skus = Object.keys(pending);
+  if(skus.length === 0) return;
+  const btn = document.getElementById('uploadPendingBtn');
+  if(btn) btn.disabled = true;
+  try{
+    await db.runTransaction(async (tx)=>{
+      const doc = await tx.get(inventarioRef);
+      const current = (doc.exists && doc.data().json) ? JSON.parse(doc.data().json) : {};
+      const now = new Date().toLocaleString('es-MX');
+      skus.forEach(sku=>{
+        if(!current[sku]) current[sku] = { cantidad: 0, ultimo: '' };
+        current[sku].cantidad += pending[sku].cantidad;
+        current[sku].ultimo = now;
+        current[sku].lastOwnerId = ownerId;
+        current[sku].lastOwnerName = ownerName || '';
+      });
+      tx.set(inventarioRef, { json: JSON.stringify(current) });
+    });
+    pending = {};
+    savePendingLocal();
+    renderPending();
+  }catch(err){
+    console.error(err);
+    alert('No se pudo subir a la red. Revisa tu conexión e intenta de nuevo — tus piezas pendientes siguen guardadas aquí, no se perdieron.');
+  }finally{
+    if(btn) btn.disabled = Object.keys(pending).length === 0;
+  }
+}
 
 /* ---------- identidad del dispositivo / vista individual ---------- */
 let ownerId = localStorage.getItem('trfOwnerId');
@@ -571,14 +677,10 @@ async function processScan(sku){
   }
   lastScan = { code: sku, time: nowMs };
 
-  const now = new Date();
-  if(!inventario[sku]) inventario[sku] = { cantidad: 0, ultimo: '' };
-  inventario[sku].cantidad += 1;
-  inventario[sku].ultimo = now.toLocaleString('es-MX');
-  inventario[sku].lastOwnerId = ownerId;
-  inventario[sku].lastOwnerName = ownerName || '';
-  await saveInventario();
-  renderTable();
+  if(!pending[sku]) pending[sku] = { cantidad: 0 };
+  pending[sku].cantidad += 1;
+  savePendingLocal();
+  renderPending();
 
   const known = catalog[sku];
   if(known){
@@ -596,7 +698,7 @@ function showFeedback(type, sku, text, offerAdd){
   fb.className = 'show ' + type;
   document.getElementById('fbText').innerHTML =
     '<span class="fb-sku">' + escapeHtml(sku) + '</span> — ' + escapeHtml(text) +
-    ' &nbsp;·&nbsp; cantidad: ' + inventario[sku].cantidad;
+    ' &nbsp;·&nbsp; pendiente por subir: ' + pending[sku].cantidad;
   const btn = document.getElementById('fbActionBtn');
   if(offerAdd){
     btn.style.display = 'inline-block';
@@ -1075,6 +1177,7 @@ function escapeAttr(str){ return String(str).replace(/'/g, "\\'"); }
 document.getElementById('footerNote').textContent =
   'Los datos se guardan en la nube y se sincronizan al instante con todos los que abran este sitio, desde cualquier celular o computadora. El escaneo funciona con pistola USB/Bluetooth (modo teclado) o con la cámara del celular leyendo el mismo código de barras.';
 updateViewModeBadge();
+renderPending();
 loadData();
 </script>
 </body>
