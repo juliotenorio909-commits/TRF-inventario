@@ -127,8 +127,9 @@
   }
   .view-mode-toggle:hover{ border-color: var(--accent); color: var(--text); }
   .view-mode-toggle.individual{ background: var(--accent-dim, var(--panel-2)); border-color: var(--accent); color: var(--accent); }
-  .pending-actions{ margin-top: 14px; }
-  .pending-actions .primary{ width: 100%; }
+  .pending-actions{ margin-top: 14px; display:flex; gap:10px; }
+  .pending-actions .primary{ flex:1; }
+  .pending-actions button:not(.primary){ flex:1; }
   #pendingPanel h2{ display:flex; align-items:center; gap:10px; }
   .ai-status{ font-size: 0.72rem; margin-top: 10px; padding: 6px 10px; border-radius: 6px; display:inline-block; background: var(--panel-2); color: var(--muted); border: 1px solid var(--line); }
   .ai-status.ai-on{ color: var(--ok); border-color: var(--ok-dim); }
@@ -286,17 +287,18 @@
   </div>
 
   <div class="panel" id="pendingPanel">
-    <h2>Pendientes por subir</h2>
-    <div class="gun-hint">Lo que escaneas aquí se queda solo en este dispositivo hasta que le des clic a "Subir a red". Nadie más lo ve hasta ese momento.</div>
+    <h2>Piezas escaneadas (sin subir)</h2>
+    <div class="gun-hint">Lo que escaneas aquí se queda solo en este dispositivo. Cuando termines, expórtalo a Excel si quieres respaldo, y dale a "Subir a RED" para que se sume al STOCK ACTUAL.</div>
     <div id="pendingWrap"></div>
     <div class="pending-actions">
-      <button class="primary" id="uploadPendingBtn" onclick="uploadPendingToRed()" disabled>Subir a red (0 piezas)</button>
+      <button onclick="exportPendingExcel()">Exportar Excel</button>
+      <button class="primary" id="uploadPendingBtn" onclick="uploadPendingToRed()" disabled>Subir a RED (0 piezas)</button>
     </div>
   </div>
 
   <div class="panel">
-    <h2>Catálogo e inventario</h2>
-    <div class="gun-hint">Este es el inventario ya confirmado y compartido con todo el equipo.</div>
+    <h2>STOCK ACTUAL</h2>
+    <div class="gun-hint">Este es el stock ya confirmado y compartido con todo el equipo — se actualiza cuando alguien le da "Subir a RED".</div>
     <div class="toolbar">
       <input type="text" id="searchBox" placeholder="Buscar por SKU, descripción, marca, modelo o referencia…" oninput="renderTable()">
       <div class="spacer"></div>
@@ -358,7 +360,7 @@ function renderPending(){
   const btn = document.getElementById('uploadPendingBtn');
   const totalPiezas = skus.reduce((sum,s)=> sum + (pending[s].cantidad||0), 0);
   if(btn){
-    btn.textContent = 'Subir a red (' + totalPiezas + (totalPiezas===1?' pieza)':' piezas)');
+    btn.textContent = 'Subir a RED (' + totalPiezas + (totalPiezas===1?' pieza)':' piezas)');
     btn.disabled = totalPiezas === 0;
   }
   if(!wrap) return;
@@ -402,6 +404,31 @@ function deletePending(sku){
   delete pending[sku];
   savePendingLocal();
   renderPending();
+}
+
+function exportPendingExcel(){
+  const skus = Object.keys(pending).sort((a,b)=> a.localeCompare(b));
+  if(skus.length === 0){
+    alert('No tienes piezas escaneadas todavía.');
+    return;
+  }
+  const rows = skus.map(sku=>{
+    const c = catalog[sku] || {};
+    return {
+      SKU: sku,
+      Descripcion: c.descripcion || '',
+      Marca: c.marca || '',
+      Modelo: c.modelo || '',
+      Anio: c.anio || '',
+      Referencia: c.referencia || '',
+      Cantidad: pending[sku].cantidad
+    };
+  });
+  const ws = XLSX.utils.json_to_sheet(rows);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Escaneado');
+  const suffix = ownerName ? '_' + ownerName : '';
+  XLSX.writeFile(wb, 'escaneado' + suffix + '_' + new Date().toISOString().slice(0,10) + '.xlsx');
 }
 
 async function uploadPendingToRed(){
