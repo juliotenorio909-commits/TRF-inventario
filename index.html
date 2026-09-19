@@ -295,6 +295,17 @@
     <div id="tableWrap"></div>
   </div>
 
+  <div class="panel">
+    <h2>Catálogo completo</h2>
+    <div class="gun-hint">Todas las refacciones que se han subido al catálogo (por Excel o a mano), independientemente de si ya se han escaneado o no.</div>
+    <div class="toolbar">
+      <input type="text" id="catalogSearchBox" placeholder="Buscar por SKU, descripción o marca…" oninput="renderCatalogBrowser()">
+      <div class="spacer"></div>
+      <div id="catalogCount" class="muted-text"></div>
+    </div>
+    <div id="catalogBrowserWrap"></div>
+  </div>
+
   <div class="footer-note" id="footerNote"></div>
 </div>
 
@@ -376,14 +387,16 @@ const firebaseConfig = {
 };
 firebase.initializeApp(firebaseConfig);
 const db = firebase.firestore();
-const catalogRef = db.collection('inventario_refacciones').doc('catalog');
+const catalogItemsRef = db.collection('inventario_refacciones').doc('catalog').collection('items');
 const inventarioRef = db.collection('inventario_refacciones').doc('inventario');
 
 /* ---------- storage (Firestore, con sincronización en vivo) ---------- */
 function loadData(){
-  catalogRef.onSnapshot(doc=>{
-    catalog = (doc.exists && doc.data().json) ? JSON.parse(doc.data().json) : {};
+  catalogItemsRef.onSnapshot(qs=>{
+    catalog = {};
+    qs.forEach(doc=>{ catalog[doc.id] = doc.data(); });
     renderTable();
+    renderCatalogBrowser();
   }, err=>console.error('Error leyendo catálogo', err));
 
   inventarioRef.onSnapshot(doc=>{
@@ -392,9 +405,9 @@ function loadData(){
   }, err=>console.error('Error leyendo inventario', err));
 }
 
-async function saveCatalog(){
-  try{ await catalogRef.set({ json: JSON.stringify(catalog) }); }
-  catch(e){ console.error('Error guardando catálogo', e); alert('No se pudo guardar en la base de datos. Revisa tu conexión.'); }
+async function saveCatalogItem(sku, data){
+  try{ await catalogItemsRef.doc(sku).set(data); }
+  catch(e){ console.error('Error guardando pieza de catálogo', e); alert('No se pudo guardar en la base de datos. Revisa tu conexión.'); }
 }
 async function saveInventario(){
   try{ await inventarioRef.set({ json: JSON.stringify(inventario) }); }
@@ -831,6 +844,43 @@ async function confirmLabelCode(){
   await processScan(code);
 }
 
+/* ---------- catálogo completo (independiente del escaneo) ---------- */
+function renderCatalogBrowser(){
+  const wrap = document.getElementById('catalogBrowserWrap');
+  const countEl = document.getElementById('catalogCount');
+  const searchEl = document.getElementById('catalogSearchBox');
+  if(!wrap || !searchEl) return;
+  const search = (searchEl.value || '').toLowerCase();
+
+  const allSkus = Object.keys(catalog).sort((a,b)=> a.localeCompare(b));
+  if(countEl) countEl.textContent = allSkus.length + (allSkus.length===1 ? ' pieza en catálogo' : ' piezas en catálogo');
+
+  const filtered = allSkus.filter(sku=>{
+    if(!search) return true;
+    const c = catalog[sku];
+    if(sku.toLowerCase().includes(search)) return true;
+    return ['descripcion','marca','modelo','referencia'].some(k => (c[k]||'').toLowerCase().includes(search));
+  });
+
+  if(filtered.length === 0){
+    wrap.innerHTML = '<div class="empty">' + (allSkus.length===0 ? 'Todavía no se ha subido ningún catálogo.' : 'Sin resultados para esa búsqueda.') + '</div>';
+    return;
+  }
+
+  let html = '<table><thead><tr><th>SKU</th><th>Descripción</th><th>Marca</th><th>Stock</th></tr></thead><tbody>';
+  filtered.forEach(sku=>{
+    const c = catalog[sku];
+    html += '<tr>' +
+      '<td class="sku-cell">' + escapeHtml(sku) + '</td>' +
+      '<td>' + escapeHtml(c.descripcion || '—') + '</td>' +
+      '<td>' + escapeHtml(c.marca || '—') + '</td>' +
+      '<td class="qty-cell">' + escapeHtml(String(c.stock ?? '—')) + '</td>' +
+      '</tr>';
+  });
+  html += '</tbody></table>';
+  wrap.innerHTML = html;
+}
+
 /* ---------- tabla ---------- */
 function renderTable(){
   const wrap = document.getElementById('tableWrap');
@@ -959,7 +1009,7 @@ function closeModal(){
 }
 async function saveModal(){
   if(!currentModalSku) return;
-  catalog[currentModalSku] = {
+  const data = {
     descripcion: document.getElementById('fDescripcion').value.trim(),
     marca: document.getElementById('fMarca').value.trim(),
     modelo: document.getElementById('fModelo').value.trim(),
@@ -968,12 +1018,28 @@ async function saveModal(){
     precio: document.getElementById('fPrecio').value.trim(),
     stock: document.getElementById('fStock').value.trim()
   };
-  await saveCatalog();
+  catalog[currentModalSku] = data;
+  await saveCatalogItem(currentModalSku, data);
   closeModal();
   renderTable();
+  renderCatalogBrowser();
 }
 
 /* ---------- importar catálogo (excel / csv) ---------- */
+function findHeaderCol(headers, patterns){
+  for(let i=0;i<headers.length;i++){
+    const h = headers[i];
+    if(h === null || h === undefined) continue;
+    const hs = String(h).trim().toLowerCase();
+    for(const p of patterns){ if(hs.includes(p)) return i; }
+  }
+  return -1;
+}
+
+function cleanSheetBrandName(title){
+  return String(title).replace(/^\s*inventario\s*/i, '').replace(/^[\s-]+|[\s-]+$/g, '').trim();
+}
+
 function handleImport(evt){
   const file = evt.target.files[0];
   if(!file) return;
@@ -982,47 +1048,112 @@ function handleImport(evt){
     try{
       const data = new Uint8Array(e.target.result);
       const workbook = XLSX.read(data, { type: 'array' });
-      const sheet = workbook.Sheets[workbook.SheetNames[0]];
 
-      // Algunos excels traen una fila de título (ej. "Optimo Autopartes") antes
-      // de los encabezados reales. Buscamos automáticamente la fila que
-      // contiene "Código"/"SKU" y usamos esa como encabezado real.
-      const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
-      const skuHeaderMatches = ['código','codigo','sku'];
-      let headerRowIndex = raw.findIndex(r =>
-        Array.isArray(r) && r.some(cell => skuHeaderMatches.includes(String(cell).trim().toLowerCase()))
-      );
-      if(headerRowIndex === -1) headerRowIndex = 0; // no se encontró, usar la primera fila como respaldo
+      const merged = {}; // sku -> {descripcion, marca, modelo, anio, referencia, precio, stock}
 
-      const headers = raw[headerRowIndex].map(h => String(h).trim());
-      const rows = raw.slice(headerRowIndex + 1).map(r=>{
-        const obj = {};
-        headers.forEach((h, i)=>{ obj[h] = (r[i] !== undefined ? r[i] : ''); });
-        return obj;
+      workbook.SheetNames.forEach(sheetName=>{
+        const sheet = workbook.Sheets[sheetName];
+        const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '' });
+        if(!raw.length) return;
+
+        // busca la fila de encabezados reales (a veces hay una fila de título arriba)
+        const skuHeaderMatches = ['código','codigo','sku'];
+        let headerRowIndex = raw.findIndex(r =>
+          Array.isArray(r) && r.some(cell => skuHeaderMatches.includes(String(cell).trim().toLowerCase()))
+        );
+        if(headerRowIndex === -1) headerRowIndex = 0;
+
+        const headers = (raw[headerRowIndex] || []).map(h => String(h).trim());
+        const dataRows = raw.slice(headerRowIndex + 1);
+
+        let skuCol = findHeaderCol(headers, ['código','codigo','sku']);
+        const descCol = findHeaderCol(headers, ['descripci','nombre']);
+        const stockCol = findHeaderCol(headers, ['stock']);
+        const marcaCol = findHeaderCol(headers, ['marca']);
+        const modeloCol = findHeaderCol(headers, ['modelo']);
+        const anioCol = findHeaderCol(headers, ['año','ano']);
+        const refCol = findHeaderCol(headers, ['referencia']);
+        const precioCol = findHeaderCol(headers, ['precio']);
+
+        // si el encabezado no dice claramente cuál es la columna del SKU
+        // (pasa en algunos exports), la detectamos buscando el prefijo "mayo_"
+        if(skuCol === -1){
+          let bestCol = 0, bestCount = 0;
+          for(let c=0; c<Math.min(headers.length,6); c++){
+            let cnt = 0;
+            for(let i=0;i<Math.min(dataRows.length,50);i++){
+              const v = dataRows[i][c];
+              if(v && String(v).trim().toLowerCase().startsWith('mayo_')) cnt++;
+            }
+            if(cnt > bestCount){ bestCount = cnt; bestCol = c; }
+          }
+          skuCol = bestCount > 0 ? bestCol : 0;
+        }
+
+        const sheetBrand = cleanSheetBrandName(sheetName);
+
+        dataRows.forEach(row=>{
+          if(skuCol >= row.length) return;
+          let sku = row[skuCol];
+          if(!sku) return;
+          sku = String(sku).trim().replace(/^mayo_\s*/i, '').trim();
+          if(!sku) return;
+
+          const get = (col) => (col !== -1 && col < row.length && row[col] !== '' && row[col] !== null && row[col] !== undefined)
+            ? String(row[col]).trim() : '';
+
+          const descripcion = get(descCol);
+          let marca = get(marcaCol);
+          if(!marca) marca = sheetBrand;
+          const modelo = get(modeloCol);
+          const anio = get(anioCol);
+          const referencia = get(refCol);
+          const precio = get(precioCol);
+          let stock = 0;
+          const stockRaw = get(stockCol);
+          if(stockRaw){ const n = parseFloat(stockRaw); if(!isNaN(n)) stock = n; }
+
+          if(merged[sku]){
+            merged[sku].stock += stock;
+            if(!merged[sku].descripcion && descripcion) merged[sku].descripcion = descripcion;
+            if(!merged[sku].marca && marca) merged[sku].marca = marca;
+            if(!merged[sku].modelo && modelo) merged[sku].modelo = modelo;
+            if(!merged[sku].anio && anio) merged[sku].anio = anio;
+            if(!merged[sku].referencia && referencia) merged[sku].referencia = referencia;
+            if(!merged[sku].precio && precio) merged[sku].precio = precio;
+          } else {
+            merged[sku] = { descripcion, marca, modelo, anio, referencia, precio, stock };
+          }
+        });
       });
 
-      const pick = (row, names) => {
-        for(const n of names){ if(row[n] !== undefined && row[n] !== null && String(row[n]).trim() !== '') return String(row[n]).trim(); }
-        return '';
-      };
-      let count = 0;
-      rows.forEach(row=>{
-        const sku = pick(row, ['Código','Codigo','código','codigo','SKU','sku','Sku']);
-        if(!sku) return;
-        catalog[sku] = {
-          descripcion: pick(row, ['Descripción','Descripcion','descripción','descripcion','Nombre','nombre']),
-          marca: pick(row, ['Marca','marca']),
-          modelo: pick(row, ['Modelo','modelo']),
-          anio: pick(row, ['Año','Ano','año','ano','AÑO']),
-          referencia: pick(row, ['Referencia','referencia']),
-          precio: pick(row, ['Precio','precio']),
-          stock: pick(row, ['Stock','stock'])
-        };
-        count++;
+      // si el SKU ya existía en el catálogo compartido, sumamos el stock en vez de reemplazarlo
+      const skus = Object.keys(merged);
+      skus.forEach(sku=>{
+        const existing = catalog[sku];
+        if(existing){
+          const existingStock = parseFloat(existing.stock) || 0;
+          merged[sku].stock += existingStock;
+          if(!merged[sku].descripcion && existing.descripcion) merged[sku].descripcion = existing.descripcion;
+          if(!merged[sku].marca && existing.marca) merged[sku].marca = existing.marca;
+        }
       });
-      await saveCatalog();
+
+      // se guarda en lotes de 500 (límite de Firestore por lote)
+      const CHUNK = 500;
+      for(let i=0; i<skus.length; i += CHUNK){
+        const batch = db.batch();
+        skus.slice(i, i + CHUNK).forEach(sku=>{
+          const payload = { ...merged[sku], stock: String(merged[sku].stock) };
+          catalog[sku] = payload;
+          batch.set(catalogItemsRef.doc(sku), payload);
+        });
+        await batch.commit();
+      }
+
       renderTable();
-      alert('Catálogo importado: ' + count + ' SKU cargados.');
+      renderCatalogBrowser();
+      alert('Catálogo importado: ' + skus.length + ' SKU cargados (sumando cantidades repetidas).');
     }catch(err){
       console.error(err);
       alert('No se pudo leer el archivo. Verifica que tenga una columna de Código (o SKU) con el identificador de cada pieza.');
